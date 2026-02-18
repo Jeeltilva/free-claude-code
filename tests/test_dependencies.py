@@ -13,6 +13,7 @@ def _make_mock_settings(**overrides):
     mock.nvidia_nim_rate_limit = 40
     mock.nvidia_nim_rate_window = 60
     mock.nim = NimSettings()
+    mock.get_api_keys.return_value = ["test_key"]
     for key, value in overrides.items():
         setattr(mock, key, value)
     return mock

@@ -23,6 +23,7 @@ from config.settings import Settings
 from providers.base import BaseProvider
 from providers.exceptions import ProviderError
 from providers.logging_utils import log_request_compact
+from providers.nvidia_nim.metrics import MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,13 @@ async def create_message(
 ):
     """Create a message (streaming or non-streaming)."""
 
+    metrics = MetricsCollector.get_instance()
+
     try:
         if settings.fast_prefix_detection:
             is_prefix_req, command = is_prefix_detection_request(request_data)
             if is_prefix_req:
+                metrics.record_interception()
                 return MessagesResponse(
                     id=f"msg_{uuid.uuid4()}",
                     model=request_data.model,
@@ -58,6 +62,7 @@ async def create_message(
         # Optimization: Mock network probe/quota requests
         if settings.enable_network_probe_mock and is_quota_check_request(request_data):
             logger.info("Optimization: Intercepted and mocked quota probe")
+            metrics.record_interception()
             return MessagesResponse(
                 id=f"msg_{uuid.uuid4()}",
                 model=request_data.model,
@@ -72,6 +77,7 @@ async def create_message(
             request_data
         ):
             logger.info("Optimization: Skipped title generation request")
+            metrics.record_interception()
             return MessagesResponse(
                 id=f"msg_{uuid.uuid4()}",
                 model=request_data.model,
@@ -86,6 +92,7 @@ async def create_message(
             request_data
         ):
             logger.info("Optimization: Skipped suggestion mode request")
+            metrics.record_interception()
             return MessagesResponse(
                 id=f"msg_{uuid.uuid4()}",
                 model=request_data.model,
@@ -101,6 +108,7 @@ async def create_message(
             if is_fp:
                 filepaths = extract_filepaths_from_command(cmd, output)
                 logger.info("Optimization: Mocked filepath extraction")
+                metrics.record_interception()
                 return MessagesResponse(
                     id=f"msg_{uuid.uuid4()}",
                     model=request_data.model,
@@ -166,6 +174,57 @@ async def root(settings: Settings = Depends(get_settings)):
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@router.get("/health/accounts")
+async def account_health(provider: BaseProvider = Depends(get_provider)):
+    """Account pool health status for multi-account rotation.
+
+    Returns 503 if no healthy accounts are available.
+    """
+    rotator = getattr(provider, "_rotator", None)
+    if rotator is None:
+        return {"mode": "single_key", "status": "healthy"}
+
+    status = await rotator.get_status()
+    pool_health = status.get("pool_health", {})
+
+    if pool_health.get("healthy", 0) == 0:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "unhealthy",
+                "message": "No healthy accounts available",
+                **status,
+            },
+        )
+
+    return {"status": "healthy", **status}
+
+
+@router.get("/metrics")
+async def get_metrics(
+    provider: BaseProvider = Depends(get_provider),
+    settings: Settings = Depends(get_settings),
+):
+    """Throughput and latency metrics for the proxy.
+
+    Returns TTFT, TPS, RPM, interception rates, and per-account breakdowns.
+    """
+    metrics = MetricsCollector.get_instance()
+    rotator = getattr(provider, "_rotator", None)
+    pool = getattr(provider, "_pool", None)
+
+    accounts = pool.get_all_accounts() if pool else []
+    rate_limiter_rpm = settings.nvidia_nim_rate_limit
+    if rotator:
+        status = await rotator.get_status()
+        rate_limiter_rpm = status.get("rate_limit", settings.nvidia_nim_rate_limit)
+
+    return metrics.get_snapshot(
+        accounts=accounts,
+        rate_limiter_rpm=rate_limiter_rpm,
+    )
 
 
 @router.post("/stop")

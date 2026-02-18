@@ -24,14 +24,23 @@ def get_provider() -> BaseProvider:
         if settings.provider_type == "nvidia_nim":
             from providers.nvidia_nim import NvidiaNimProvider
 
+            # Get all API keys (supports both single and multiple)
+            api_keys = settings.get_api_keys()
+
+            if not api_keys:
+                raise ValueError(
+                    "No NVIDIA NIM API keys configured. "
+                    "Set NVIDIA_NIM_API_KEY or NVIDIA_NIM_API_KEYS"
+                )
+
             config = ProviderConfig(
-                api_key=settings.nvidia_nim_api_key,
+                api_key=api_keys[0],  # Primary key for backward compatibility
                 base_url=NVIDIA_NIM_BASE_URL,
                 rate_limit=settings.nvidia_nim_rate_limit,
                 rate_window=settings.nvidia_nim_rate_window,
                 nim_settings=settings.nim,
             )
-            _provider = NvidiaNimProvider(config)
+            _provider = NvidiaNimProvider(config, api_keys=api_keys)
         else:
             raise ValueError(
                 f"Unknown provider_type: '{settings.provider_type}'. "
@@ -44,7 +53,12 @@ async def cleanup_provider():
     """Cleanup provider resources."""
     global _provider
     if _provider:
+        # Close multi-account pool if present
+        pool = getattr(_provider, "_pool", None)
+        if pool:
+            await pool.close_all()
+        # Close single-key client if present
         client = getattr(_provider, "_client", None)
-        if client and hasattr(client, "aclose"):
+        if client:
             await client.aclose()
-    _provider = None
+        _provider = None

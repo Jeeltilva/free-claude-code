@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .routes import router
+from .admin_routes import router as admin_router
 from .dependencies import cleanup_provider
 from providers.exceptions import ProviderError
 from config.settings import get_settings
@@ -192,6 +193,7 @@ def create_app() -> FastAPI:
 
     # Register routes
     app.include_router(router)
+    app.include_router(admin_router)
 
     # Exception handlers
     @app.exception_handler(ProviderError)
